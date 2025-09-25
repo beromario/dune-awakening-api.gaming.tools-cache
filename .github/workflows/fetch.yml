@@ -118,7 +118,7 @@ jobs:
           
       - name: Create README for GitHub Pages
         run: |
-          cat > public/index.html << 'EOF'
+          cat > public/index.html << "EOF"
           <!DOCTYPE html>
           <html lang="en">
           <head>
@@ -203,14 +203,14 @@ jobs:
               <div class="info">
                   <h2>Usage Example</h2>
                   <pre><code>// Fetch Ukrainian items
-fetch('https://YOUR_GITHUB_USERNAME.github.io/dune-awakening-api.gaming.tools-cache/api/items.uk.json')
+fetch("https://beromario.github.io/dune-awakening-api.gaming.tools-cache/api/items.uk.json")
   .then(response => response.json())
   .then(data => console.log(data));
 
 // Check metadata
-fetch('https://YOUR_GITHUB_USERNAME.github.io/dune-awakening-api.gaming.tools-cache/api/meta.uk.json')
+fetch("https://beromario.github.io/dune-awakening-api.gaming.tools-cache/api/meta.uk.json")
   .then(response => response.json())
-  .then(meta => console.log('Last updated:', meta.last_updated));</code></pre>
+  .then(meta => console.log("Last updated:", meta.last_updated));</code></pre>
               </div>
               
               <div class="footer">
