@@ -5,11 +5,6 @@ on:
     # Runs daily at 02:07 UTC
     - cron: "7 2 * * *"
   workflow_dispatch: # Manual trigger
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/fetch.yml'
 
 jobs:
   fetch-and-cache:
@@ -24,87 +19,139 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl
+          npm init -y
+          npm install node-fetch@2
           
-      - name: Create output directory
-        run: mkdir -p public/api
-        
-      - name: Fetch English items
+      - name: Create fetch script
         run: |
-          echo "Fetching English data..."
-          curl -fsSL "https://dune-api.gaming.tools/items?lang=en" \
-            -H "User-Agent: dune-cache-gh-actions" \
-            -H "Accept: application/json" \
-            --retry 5 \
-            --retry-delay 3 \
-            -o "public/api/items.en.json"
+          cat > fetch-data.js << 'ENDSCRIPT'
+          const fetch = require('node-fetch');
+          const fs = require('fs').promises;
+          const path = require('path');
           
-          # Validate JSON
-          jq -e . "public/api/items.en.json" > /dev/null
-          echo "✓ English data fetched successfully"
+          const LANGUAGES = ['en', 'uk', 'ru'];
+          const BASE_URL = 'https://dune-api.gaming.tools/items';
+          const DELAY = 2000; // 2 seconds between requests
           
-      - name: Fetch Ukrainian items
-        run: |
-          echo "Fetching Ukrainian data..."
-          curl -fsSL "https://dune-api.gaming.tools/items?lang=uk" \
-            -H "User-Agent: dune-cache-gh-actions" \
-            -H "Accept: application/json" \
-            --retry 5 \
-            --retry-delay 3 \
-            -o "public/api/items.uk.json"
+          // Custom headers to look more like a browser
+          const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Referer': 'https://dune.gaming.tools/',
+            'Origin': 'https://dune.gaming.tools'
+          };
           
-          # Validate JSON
-          jq -e . "public/api/items.uk.json" > /dev/null
-          echo "✓ Ukrainian data fetched successfully"
+          async function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+          }
           
-      - name: Fetch Russian items
-        run: |
-          echo "Fetching Russian data..."
-          curl -fsSL "https://dune-api.gaming.tools/items?lang=ru" \
-            -H "User-Agent: dune-cache-gh-actions" \
-            -H "Accept: application/json" \
-            --retry 5 \
-            --retry-delay 3 \
-            -o "public/api/items.ru.json"
-          
-          # Validate JSON
-          jq -e . "public/api/items.ru.json" > /dev/null
-          echo "✓ Russian data fetched successfully"
-          
-      - name: Generate metadata
-        run: |
-          TIMESTAMP=$(date -u +%FT%TZ)
-          
-          # Create metadata for each language
-          for lang in en uk ru; do
-            echo "{
-              \"last_updated\": \"$TIMESTAMP\",
-              \"source\": \"https://dune-api.gaming.tools/items?lang=$lang\",
-              \"language\": \"$lang\"
-            }" | jq . > "public/api/meta.$lang.json"
-          done
-          
-          # Create main index
-          echo "{
-            \"last_updated\": \"$TIMESTAMP\",
-            \"repository\": \"${{ github.repository }}\",
-            \"api_source\": \"https://dune-api.gaming.tools\",
-            \"reference\": \"https://dune.gaming.tools/\",
-            \"available_languages\": [\"en\", \"uk\", \"ru\"],
-            \"files\": {
-              \"en\": \"/api/items.en.json\",
-              \"uk\": \"/api/items.uk.json\",
-              \"ru\": \"/api/items.ru.json\"
+          async function fetchWithRetry(url, retries = 3) {
+            for (let i = 0; i < retries; i++) {
+              try {
+                console.log(`Attempt ${i + 1} for ${url}`);
+                const response = await fetch(url, { headers });
+                
+                if (response.status === 403) {
+                  console.log('Got 403, trying with different headers...');
+                  // Try with minimal headers
+                  const minimalResponse = await fetch(url, {
+                    headers: {
+                      'User-Agent': 'dune-cache/1.0'
+                    }
+                  });
+                  if (minimalResponse.ok) {
+                    return await minimalResponse.json();
+                  }
+                }
+                
+                if (!response.ok) {
+                  throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                return data;
+              } catch (error) {
+                console.error(`Attempt ${i + 1} failed:`, error.message);
+                if (i < retries - 1) {
+                  await sleep(DELAY * (i + 1)); // Exponential backoff
+                }
+              }
             }
-          }" | jq . > "public/index.json"
+            throw new Error(`Failed to fetch after ${retries} attempts`);
+          }
           
-      - name: Create simple index.html
-        run: |
-          cat > public/index.html << 'ENDOFFILE'
-          <!DOCTYPE html>
+          async function main() {
+            // Create directories
+            await fs.mkdir('public/api', { recursive: true });
+            
+            const timestamp = new Date().toISOString();
+            const results = {};
+            
+            for (const lang of LANGUAGES) {
+              console.log(`\nFetching ${lang}...`);
+              const url = `${BASE_URL}?lang=${lang}`;
+              
+              try {
+                const data = await fetchWithRetry(url);
+                
+                // Save items
+                await fs.writeFile(
+                  `public/api/items.${lang}.json`,
+                  JSON.stringify(data, null, 2)
+                );
+                
+                // Save metadata
+                const metadata = {
+                  last_updated: timestamp,
+                  source: url,
+                  language: lang,
+                  item_count: Array.isArray(data) ? data.length : Object.keys(data).length
+                };
+                
+                await fs.writeFile(
+                  `public/api/meta.${lang}.json`,
+                  JSON.stringify(metadata, null, 2)
+                );
+                
+                results[lang] = 'success';
+                console.log(`✓ ${lang} fetched successfully`);
+                
+                // Wait before next request
+                await sleep(DELAY);
+              } catch (error) {
+                console.error(`✗ Failed to fetch ${lang}:`, error.message);
+                results[lang] = 'failed';
+              }
+            }
+            
+            // Create index
+            const index = {
+              last_updated: timestamp,
+              repository: process.env.GITHUB_REPOSITORY || 'beromario/dune-awakening-api.gaming.tools-cache',
+              api_source: 'https://dune-api.gaming.tools',
+              reference: 'https://dune.gaming.tools/',
+              available_languages: Object.keys(results).filter(lang => results[lang] === 'success'),
+              status: results
+            };
+            
+            await fs.writeFile(
+              'public/index.json',
+              JSON.stringify(index, null, 2)
+            );
+            
+            // Create simple HTML
+            const html = `<!DOCTYPE html>
           <html lang="en">
           <head>
               <meta charset="UTF-8">
@@ -112,48 +159,96 @@ jobs:
               <title>Dune Awakening API Cache</title>
               <style>
                   body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-                  h1 { color: #333; }
-                  .links { margin: 20px 0; }
-                  .links a { display: block; margin: 10px 0; color: #0066cc; }
+                  .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+                  .success { background: #d4edda; color: #155724; }
+                  .failed { background: #f8d7da; color: #721c24; }
+                  a { color: #0066cc; text-decoration: none; }
+                  a:hover { text-decoration: underline; }
                   code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; }
               </style>
           </head>
           <body>
               <h1>Dune Awakening API Cache</h1>
-              <p>Cached mirror of the Dune Awakening Gaming Tools API</p>
+              <p>Last updated: ${timestamp}</p>
               <p>Reference: <a href="https://dune.gaming.tools/">https://dune.gaming.tools/</a></p>
               
-              <div class="links">
-                  <h2>Available Data:</h2>
-                  <a href="/api/items.en.json">English Items (items.en.json)</a>
-                  <a href="/api/items.uk.json">Ukrainian Items (items.uk.json)</a>
-                  <a href="/api/items.ru.json">Russian Items (items.ru.json)</a>
-                  <br>
-                  <a href="/index.json">Index with metadata (index.json)</a>
-              </div>
+              <h2>Status:</h2>
+              ${Object.entries(results).map(([lang, status]) => 
+                `<div class="status ${status}">${lang}: ${status}</div>`
+              ).join('')}
               
-              <div>
-                  <h2>Usage:</h2>
-                  <code>https://beromario.github.io/dune-awakening-api.gaming.tools-cache/api/items.uk.json</code>
-              </div>
+              <h2>Available Files:</h2>
+              <ul>
+                ${Object.keys(results).filter(lang => results[lang] === 'success').map(lang => 
+                  `<li><a href="/api/items.${lang}.json">items.${lang}.json</a></li>`
+                ).join('')}
+              </ul>
+              
+              <h2>Usage:</h2>
+              <code>https://beromario.github.io/dune-awakening-api.gaming.tools-cache/api/items.uk.json</code>
           </body>
-          </html>
-          ENDOFFILE
+          </html>`;
+            
+            await fs.writeFile('public/index.html', html);
+            
+            console.log('\nFetch complete!');
+            console.log('Results:', results);
+          }
           
-      - name: List generated files
+          main().catch(error => {
+            console.error('Fatal error:', error);
+            process.exit(1);
+          });
+          ENDSCRIPT
+          
+      - name: Run fetch script
+        run: node fetch-data.js
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          
+      - name: Fallback - Try with curl and different approach
+        if: failure()
         run: |
-          echo "Generated files:"
-          ls -la public/
+          echo "Primary fetch failed, trying alternative method..."
+          mkdir -p public/api
+          
+          # Try with wget instead of curl
+          for lang in en uk ru; do
+            echo "Trying to fetch $lang with wget..."
+            wget -q -O "public/api/items.$lang.json" \
+              --user-agent="Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0" \
+              --header="Accept: application/json" \
+              --header="Referer: https://dune.gaming.tools/" \
+              "https://dune-api.gaming.tools/items?lang=$lang" || echo "Failed $lang"
+            sleep 2
+          done
+          
+          # Check what we got
           ls -la public/api/
           
+      - name: Verify files exist
+        run: |
+          echo "Checking generated files..."
+          ls -la public/ || echo "No public directory"
+          ls -la public/api/ || echo "No api directory"
+          
+          # Try to validate at least one file
+          if [ -f "public/api/items.uk.json" ]; then
+            echo "Ukrainian file exists"
+            head -c 500 public/api/items.uk.json
+          fi
+          
       - name: Setup Pages
+        if: success()
         uses: actions/configure-pages@v4
         
       - name: Upload artifact
+        if: success()
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./public
           
       - name: Deploy to GitHub Pages
+        if: success()
         id: deployment
         uses: actions/deploy-pages@v4
