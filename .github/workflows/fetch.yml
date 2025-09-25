@@ -2,47 +2,284 @@ name: Fetch Dune Items
 
 on:
   schedule:
-    - cron: "7 2 * * *"   # щодня о 02:07 UTC
-  workflow_dispatch: {}    # ручний запуск
+    # Runs daily at 02:07 UTC
+    - cron: "7 2 * * *"
+  workflow_dispatch: # Manual trigger
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/fetch.yml'
 
 jobs:
-  build:
+  fetch-and-cache:
     runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js (optional, for future processing)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+          
+      - name: Create output directory
+        run: mkdir -p public/api
+        
+      - name: Fetch selected language versions
+        run: |
+          # Define only required languages (EN, UK, RU)
+          declare -A languages=(
+            ["en"]="English"
+            ["uk"]="Українська"
+            ["ru"]="Русский"
+          )
+          
+          # Timestamp for metadata
+          TIMESTAMP=$(date -u +%FT%TZ)
+          
+          # Fetch data for each language
+          for lang in "${!languages[@]}"; do
+            echo "Fetching data for ${lang} (${languages[$lang]})..."
+            
+            # Fetch with retries
+            if curl -fsSL "https://dune-api.gaming.tools/items?lang=${lang}" \
+              -H "User-Agent: dune-cache-gh-actions (https://github.com/${{ github.repository }})" \
+              -H "Accept: application/json" \
+              --retry 5 \
+              --retry-delay 3 \
+              --retry-max-time 60 \
+              -o "public/api/items.${lang}.json"; then
+              
+              # Validate JSON
+              if jq -e . "public/api/items.${lang}.json" > /dev/null 2>&1; then
+                echo "✓ Successfully fetched and validated ${lang}"
+                
+                # Create metadata file for this language
+                jq -n \
+                  --arg timestamp "$TIMESTAMP" \
+                  --arg source "https://dune-api.gaming.tools/items?lang=${lang}" \
+                  --arg language "${lang}" \
+                  --arg language_name "${languages[$lang]}" \
+                  '{
+                    last_updated: $timestamp,
+                    source: $source,
+                    language: $language,
+                    language_name: $language_name
+                  }' > "public/api/meta.${lang}.json"
+              else
+                echo "✗ Invalid JSON for ${lang}, removing file"
+                rm -f "public/api/items.${lang}.json"
+              fi
+            else
+              echo "✗ Failed to fetch ${lang}"
+            fi
+            
+            # Small delay between requests to be respectful to the API
+            sleep 1
+          done
+          
+      - name: Generate index file
+        run: |
+          # Create an index.json with all available languages and metadata
+          TIMESTAMP=$(date -u +%FT%TZ)
+          
+          # List all successfully fetched languages
+          LANGS_JSON=$(ls public/api/items.*.json 2>/dev/null | sed 's/.*items\.\(.*\)\.json/\1/' | jq -R . | jq -s .)
+          
+          if [ -n "$LANGS_JSON" ]; then
+            jq -n \
+              --arg timestamp "$TIMESTAMP" \
+              --arg repository "${{ github.repository }}" \
+              --argjson languages "$LANGS_JSON" \
+              '{
+                last_updated: $timestamp,
+                repository: $repository,
+                api_source: "https://dune-api.gaming.tools",
+                reference: "https://dune.gaming.tools/",
+                available_languages: $languages,
+                endpoints: {
+                  items: "/api/items.{lang}.json",
+                  metadata: "/api/meta.{lang}.json"
+                }
+              }' > public/index.json
+          fi
+          
+      - name: Create README for GitHub Pages
+        run: |
+          cat > public/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Dune Awakening API Cache</title>
+              <style>
+                  body {
+                      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                      max-width: 1200px;
+                      margin: 0 auto;
+                      padding: 20px;
+                      background: #f5f5f5;
+                  }
+                  h1 { color: #333; }
+                  .info { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
+                  .lang-grid {
+                      display: grid;
+                      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+                      gap: 15px;
+                      margin: 20px 0;
+                  }
+                  .lang-card {
+                      background: white;
+                      padding: 15px;
+                      border-radius: 8px;
+                      border: 1px solid #ddd;
+                  }
+                  .lang-card h3 { margin-top: 0; }
+                  a { color: #0066cc; text-decoration: none; }
+                  a:hover { text-decoration: underline; }
+                  code {
+                      background: #f0f0f0;
+                      padding: 2px 6px;
+                      border-radius: 3px;
+                      font-size: 0.9em;
+                  }
+                  .footer {
+                      margin-top: 40px;
+                      padding-top: 20px;
+                      border-top: 1px solid #ddd;
+                      text-align: center;
+                      color: #666;
+                  }
+              </style>
+          </head>
+          <body>
+              <h1>🏜️ Dune Awakening API Cache</h1>
+              
+              <div class="info">
+                  <h2>About</h2>
+                  <p>This is a cached mirror of the <a href="https://dune.gaming.tools/">Dune Awakening Gaming Tools API</a>.</p>
+                  <p>The cache is updated daily via GitHub Actions for English, Ukrainian, and Russian languages.</p>
+                  <p><strong>Source API:</strong> <code>https://dune-api.gaming.tools/items</code></p>
+                  <p><strong>Reference:</strong> <a href="https://dune.gaming.tools/">https://dune.gaming.tools/</a></p>
+              </div>
+              
+              <div class="info">
+                  <h2>Available Endpoints</h2>
+                  <p><strong>Index:</strong> <a href="/index.json">/index.json</a> - List of available languages and metadata</p>
+                  
+                  <h3>Language-specific endpoints:</h3>
+                  <div class="lang-grid">
+                      <div class="lang-card">
+                          <h3>🇬🇧 English</h3>
+                          <p><a href="/api/items.en.json">items.en.json</a></p>
+                          <p><a href="/api/meta.en.json">meta.en.json</a></p>
+                      </div>
+                      <div class="lang-card">
+                          <h3>🇺🇦 Українська</h3>
+                          <p><a href="/api/items.uk.json">items.uk.json</a></p>
+                          <p><a href="/api/meta.uk.json">meta.uk.json</a></p>
+                      </div>
+                      <div class="lang-card">
+                          <h3>🇷🇺 Русский</h3>
+                          <p><a href="/api/items.ru.json">items.ru.json</a></p>
+                          <p><a href="/api/meta.ru.json">meta.ru.json</a></p>
+                      </div>
+                  </div>
+              </div>
+              
+              <div class="info">
+                  <h2>Usage Example</h2>
+                  <pre><code>// Fetch Ukrainian items
+fetch('https://YOUR_GITHUB_USERNAME.github.io/dune-awakening-api.gaming.tools-cache/api/items.uk.json')
+  .then(response => response.json())
+  .then(data => console.log(data));
 
+// Check metadata
+fetch('https://YOUR_GITHUB_USERNAME.github.io/dune-awakening-api.gaming.tools-cache/api/meta.uk.json')
+  .then(response => response.json())
+  .then(meta => console.log('Last updated:', meta.last_updated));</code></pre>
+              </div>
+              
+              <div class="footer">
+                  <p>Reference: <a href="https://dune.gaming.tools/">Dune Gaming Tools</a></p>
+                  <p>Repository: <a href="https://github.com/${{ github.repository }}">GitHub</a></p>
+              </div>
+          </body>
+          </html>
+          EOF
+          
+      - name: List generated files
+        run: |
+          echo "Generated files:"
+          find public -type f -name "*.json" -o -name "*.html" | sort
+          
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+        
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./public
+          
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Optional: Create release with all JSON files
+  create-release:
+    needs: fetch-and-cache
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    
+    permissions:
+      contents: write
+      
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Fetch API (UK)
-        run: |
-          mkdir -p public
-          curl -fsSL "https://dune-api.gaming.tools/items?lang=uk" \
-            -H "User-Agent: dune-cache-gh-actions" \
-            --retry 3 --retry-delay 2 \
-            -o public/items.uk.json
-
-          test -s public/items.uk.json
-          jq -e . public/items.uk.json > /dev/null
-
-          echo "{\"last_updated\":\"$(date -u +%FT%TZ)\",\"source\":\"https://dune-api.gaming.tools/items?lang=uk\"}" \
-            > public/meta.uk.json
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        
+      - name: Download artifact
+        uses: actions/download-artifact@v4
         with:
-          path: public
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          name: github-pages
+          path: ./artifact
+          
+      - name: Extract artifact
+        run: |
+          tar -xf ./artifact/artifact.tar -C ./artifact
+          mkdir -p release
+          cp -r ./artifact/api release/
+          cp ./artifact/index.json release/
+          
+      - name: Create release archive
+        run: |
+          cd release
+          tar -czf ../dune-api-cache.tar.gz .
+          cd ..
+          
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: cache-${{ github.run_number }}
+          name: API Cache - ${{ github.run_number }}
+          body: |
+            Automated cache of Dune Awakening API (EN, UK, RU)
+            Updated: ${{ github.event.repository.updated_at }}
+            
+            Contains English, Ukrainian, and Russian versions of the items API.
+          files: dune-api-cache.tar.gz
+          draft: false
+          prerelease: false
