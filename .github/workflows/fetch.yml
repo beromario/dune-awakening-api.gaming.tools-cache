@@ -203,12 +203,16 @@ jobs:
               <div class="info">
                   <h2>Usage Example</h2>
                   <pre><code>// Fetch Ukrainian items
-fetch("https://beromario.github.io/dune-awakening-api.gaming.tools-cache/api/items.uk.json")
+const itemsUrl = "https://beromario.github.io/dune-awakening-api.gaming.tools-cache/api/items.uk.json";
+const metaUrl = "https://beromario.github.io/dune-awakening-api.gaming.tools-cache/api/meta.uk.json";
+
+// Get items data
+fetch(itemsUrl)
   .then(response => response.json())
   .then(data => console.log(data));
 
-// Check metadata
-fetch("https://beromario.github.io/dune-awakening-api.gaming.tools-cache/api/meta.uk.json")
+// Check last update time
+fetch(metaUrl)
   .then(response => response.json())
   .then(meta => console.log("Last updated:", meta.last_updated));</code></pre>
               </div>
