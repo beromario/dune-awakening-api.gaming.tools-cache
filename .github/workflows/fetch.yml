@@ -1,0 +1,48 @@
+name: Fetch Dune Items
+
+on:
+  schedule:
+    - cron: "7 2 * * *"   # щодня о 02:07 UTC
+  workflow_dispatch: {}    # ручний запуск
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Fetch API (UK)
+        run: |
+          mkdir -p public
+          curl -fsSL "https://dune-api.gaming.tools/items?lang=uk" \
+            -H "User-Agent: dune-cache-gh-actions" \
+            --retry 3 --retry-delay 2 \
+            -o public/items.uk.json
+
+          test -s public/items.uk.json
+          jq -e . public/items.uk.json > /dev/null
+
+          echo "{\"last_updated\":\"$(date -u +%FT%TZ)\",\"source\":\"https://dune-api.gaming.tools/items?lang=uk\"}" \
+            > public/meta.uk.json
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
